@@ -20,7 +20,7 @@ class SimpleCNN(nn.Module):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
         x = self.fc3(x)
-        return x
+        return x 
 
 # --- Bagian untuk pengujian ---
 if __name__ == '__main__':
@@ -39,3 +39,4 @@ if __name__ == '__main__':
     print(f"\nUkuran input: {dummy_input.shape}")
     print(f"Ukuran output: {output.shape}")
     print("Pengujian model 'SimpleCNN' berhasil.")
+    # wknqoieqowmkq 

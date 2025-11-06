@@ -1,91 +1,65 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.cuda.amp import autocast, GradScaler
-from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import OneCycleLR
 from datareader import get_data_loaders, NEW_CLASS_NAMES
 from model import EfficientNetB4Model
 from utils import plot_training_history, visualize_random_val_predictions
 
 # --- Hyperparameters ---
-EPOCHS = 200
-BATCH_SIZE = 16
-BASE_LR = 1e-4
-MAX_LR = 3e-3
+EPOCHS = 50
+BATCH_SIZE = 8
+BASE_LR = 1e-3
+MAX_LR = 5e-3
 WEIGHT_DECAY = 1e-4
-TARGET_ACCURACY = 95.0
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+TARGET_ACCURACY = 80.0
+DEVICE = torch.device('cpu')
 
 def train():
-    print(f"Using device: {DEVICE} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+    print(f"Using device: {DEVICE}")
     
     # 1. Load Data
     train_loader, val_loader, num_classes, in_channels = get_data_loaders(BATCH_SIZE)
     
     # 2. Initialize Model
     model = EfficientNetB4Model(in_channels=in_channels, num_classes=num_classes, pretrained=True)
-    model = model.to(DEVICE)
     
-    # Initially freeze most layers
+    # Freeze fewer layers
     total_layers = len(list(model.net.features))
-    freeze_layers = int(total_layers * 0.8)
+    freeze_layers = int(total_layers * 0.6)
     for param in model.net.features[:freeze_layers].parameters():
         param.requires_grad = False
     
-    # 3. Loss with class weights
-    pos_weight = torch.tensor([1.0]).to(DEVICE)
+    # 3. Loss function with class weights
+    pos_weight = torch.tensor([1.0])
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     
-    # 4. Optimizer with different LRs for different parts
+    # 4. Optimizer with higher learning rates
     optimizer = optim.AdamW([
         {'params': model.net.features[freeze_layers:].parameters(), 'lr': BASE_LR},
-        {'params': model.net.classifier.parameters(), 'lr': BASE_LR * 10}
+        {'params': model.net.classifier.parameters(), 'lr': BASE_LR * 5}
     ], weight_decay=WEIGHT_DECAY)
     
-    # 5. Scheduler
+    # 5. Simpler scheduler
     scheduler = OneCycleLR(
         optimizer,
-        max_lr=[MAX_LR, MAX_LR * 10],
+        max_lr=[MAX_LR, MAX_LR * 5],
         epochs=EPOCHS,
         steps_per_epoch=len(train_loader),
-        pct_start=0.2,
+        pct_start=0.1,
         div_factor=10,
-        final_div_factor=100,
-        anneal_strategy='cos'
+        final_div_factor=50,
+        anneal_strategy='linear'
     )
-    
-    # 6. Gradient scaler for mixed precision
-    scaler = GradScaler()
     
     # Initialize tracking
     best_val_acc = 0.0
     best_val_loss = float('inf')
-    patience = 25
+    patience = 7
     patience_counter = 0
     
     # Training Loop
     for epoch in range(EPOCHS):
-        # Progressive unfreezing
-        if epoch in [40, 80, 120]:
-            unfreeze_idx = freeze_layers - int((epoch // 40) * total_layers * 0.2)
-            print(f"\nUnfreezing from layer {unfreeze_idx}...")
-            
-            for param in model.net.features[unfreeze_idx:].parameters():
-                param.requires_grad = True
-            
-            optimizer = optim.AdamW([
-                {'params': model.net.features[unfreeze_idx:].parameters(), 'lr': BASE_LR/2},
-                {'params': model.net.classifier.parameters(), 'lr': BASE_LR * 5}
-            ], weight_decay=WEIGHT_DECAY)
-            
-            scheduler = OneCycleLR(
-                optimizer,
-                max_lr=[MAX_LR/2, MAX_LR * 5],
-                epochs=EPOCHS-epoch,
-                steps_per_epoch=len(train_loader),
-                pct_start=0.1
-            )
-        
         # Training phase
         model.train()
         running_loss = 0.0
@@ -93,27 +67,27 @@ def train():
         train_total = 0
         
         for i, (images, labels) in enumerate(train_loader):
-            images = images.to(DEVICE)
-            labels = labels.float().to(DEVICE)
             if labels.dim() == 1:
                 labels = labels.unsqueeze(1)
+            labels = labels.float()
             
             optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
             
-            with autocast():
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-            
-            scaler.scale(loss).backward()
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
             scheduler.step()
             
             running_loss += loss.item()
             predicted = (torch.sigmoid(outputs) > 0.5).float()
             train_total += labels.size(0)
             train_correct += (predicted == labels).sum().item()
+            
+            if i % 10 == 0:  # More frequent updates
+                print(f'Epoch [{epoch+1}/{EPOCHS}] Batch [{i}/{len(train_loader)}] '
+                      f'Loss: {loss.item():.4f}')
         
         avg_train_loss = running_loss / len(train_loader)
         train_accuracy = 100 * train_correct / train_total
@@ -126,10 +100,9 @@ def train():
         
         with torch.no_grad():
             for images, labels in val_loader:
-                images = images.to(DEVICE)
-                labels = labels.float().to(DEVICE)
                 if labels.dim() == 1:
                     labels = labels.unsqueeze(1)
+                labels = labels.float()
                 
                 outputs = model(images)
                 val_loss += criterion(outputs, labels).item()
@@ -165,10 +138,11 @@ def train():
     print(f"\nBest Validation Accuracy: {best_val_acc:.2f}%")
     
     # Load best model and visualize
-    model.load_state_dict(torch.load("best_model.pth", weights_only=True))
-    visualize_random_val_predictions(model, val_loader, num_classes, count=10)
+    model.load_state_dict(torch.load("best_model.pth"))
+    try:
+        visualize_random_val_predictions(model, val_loader, num_classes, count=10)
+    except Exception as e:
+        print(f"Visualization error: {e}")
 
 if __name__ == '__main__':
-    torch.backends.cudnn.benchmark = True
-    torch.cuda.empty_cache()
     train()

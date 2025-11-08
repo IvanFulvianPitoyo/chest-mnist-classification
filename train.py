@@ -8,15 +8,20 @@ from model import SimpleCNN
 import matplotlib.pyplot as plt
 from utils import plot_training_history, visualize_random_val_predictions
 
-# --- Hyperparameter ---
-EPOCHS = 16
-BATCH_SIZE = 16
-LEARNING_RATE = 0.0003
+# --- Hyperparameter (MODIFIED) ---
+# Saya tingkatkan Epochs dan Batch Size, serta menyesuaikan LR
+# untuk membantu model mencapai konvergensi yang lebih baik.
+EPOCHS = 25
+BATCH_SIZE = 32
+LEARNING_RATE = 0.0005
+# (NEW) Menambahkan weight decay, ini penting untuk AdamW
+WEIGHT_DECAY = 1e-5
 
 #Menampilkan plot riwayat training dan validasi setelah training selesai.
 
 def train():
     # 1. Memuat Data
+    # (MODIFIED) BATCH_SIZE sekarang diteruskan dari variabel di atas
     train_loader, val_loader, num_classes, in_channels = get_data_loaders(BATCH_SIZE)
     
     # 2. Inisialisasi Model
@@ -26,13 +31,19 @@ def train():
     # 3. Mendefinisikan Loss Function dan Optimizer
     # Gunakan BCEWithLogitsLoss untuk klasifikasi biner. Ini lebih stabil secara numerik.
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    
+    # (MODIFIED) Mengganti Adam dengan AdamW dan menambahkan weight_decay
+    optimizer = optim.AdamW(model.parameters(), 
+                            lr=LEARNING_RATE, 
+                            weight_decay=WEIGHT_DECAY)
     
     # Inisialisasi list untuk menyimpan history
     train_losses_history = []
     val_losses_history = []
     train_accs_history = []
     val_accs_history = []
+    
+    best_val_acc = 0.0 # Melacak akurasi validasi terbaik
     
     print("\n--- Memulai Training ---")
     
@@ -96,8 +107,16 @@ def train():
         print(f"Epoch [{epoch+1}/{EPOCHS}] | "
               f"Train Loss: {avg_train_loss:.4f} | Train Acc: {train_accuracy:.2f}% | "
               f"Val Loss: {avg_val_loss:.4f} | Val Acc: {val_accuracy:.2f}%")
+        
+        # Simpan model jika akurasi validasi membaik
+        if val_accuracy > best_val_acc:
+            best_val_acc = val_accuracy
+            # Anda bisa menambahkan penyimpanan model di sini jika mau
+            # torch.save(model.state_dict(), 'best_model.pth')
+            # print(f"Model baru disimpan dengan Val Acc: {best_val_acc:.2f}%")
 
     print("--- Training Selesai ---")
+    print(f"Akurasi Validasi Terbaik: {best_val_acc:.2f}%")
     
     # Tampilkan plot
     plot_training_history(train_losses_history, val_losses_history, 
@@ -108,4 +127,3 @@ def train():
 
 if __name__ == '__main__':
     train()
-    
